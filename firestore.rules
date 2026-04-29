@@ -1,0 +1,93 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Default deny
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // Helper functions
+    function isSignedIn() {
+      return request.auth != null && request.auth.token.email_verified == true;
+    }
+
+    function isOwner(userId) {
+      return isSignedIn() && request.auth.uid == userId;
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    // Validation Blueprints
+    function isValidSession(data) {
+      return data.userId is string 
+        && data.status in ['active', 'completed']
+        && data.messages is list
+        && (data.messages.size() == 0 || (data.messages[0].role is string))
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidNote(data) {
+      return data.userId is string
+        && data.content is string && data.content.size() < 100000
+        && data.createdAt is timestamp;
+    }
+
+    // User Profile
+    match /users/{userId} {
+      allow get: if isOwner(userId);
+      allow create: if isOwner(userId) 
+        && incoming().email == request.auth.token.email
+        && incoming().createdAt == request.time;
+      allow update: if isOwner(userId)
+        && incoming().email == existing().email
+        && incoming().createdAt == existing().createdAt
+        && incoming().diff(existing()).affectedKeys().hasOnly(['displayName', 'photoURL', 'updatedAt']);
+
+      // Sessions
+      match /sessions/{sessionId} {
+        allow list, get: if isOwner(userId);
+        allow create: if isOwner(userId) && isValidId(sessionId)
+          && isValidSession(incoming())
+          && incoming().userId == userId
+          && incoming().status == 'active';
+        allow update: if isOwner(userId)
+          && incoming().userId == userId
+          && isValidSession(incoming())
+          && (
+            // Action: Add message (status stays active)
+            (incoming().status == existing().status && existing().status == 'active' && incoming().diff(existing()).affectedKeys().hasOnly(['messages', 'updatedAt'])) ||
+            // Action: Complete session (status changes to completed)
+            (existing().status == 'active' && incoming().status == 'completed' && incoming().diff(existing()).affectedKeys().hasAll(['status', 'report', 'updatedAt']))
+          );
+        allow delete: if isOwner(userId);
+      }
+
+      // Notes
+      match /notes/{noteId} {
+        allow list, get: if isOwner(userId);
+        allow create: if isOwner(userId) && isValidId(noteId)
+          && incoming().userId == userId
+          && incoming().content is string
+          && (incoming().keywords is string || !('keywords' in incoming()))
+          && (incoming().summary is string || !('summary' in incoming()))
+          && incoming().createdAt is timestamp;
+        allow update: if isOwner(userId)
+          && incoming().userId == userId
+          && incoming().content is string
+          && incoming().diff(existing()).affectedKeys().hasOnly(['title', 'content', 'keywords', 'summary', 'updatedAt']);
+        allow delete: if isOwner(userId);
+      }
+    }
+  }
+}
