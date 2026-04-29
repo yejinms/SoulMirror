@@ -1,6 +1,14 @@
 const ANTHROPIC_API_URL = 'https://api.anthropic.com/v1/messages';
-const ANTHROPIC_MODEL = process.env.ANTHROPIC_MODEL || 'claude-3-5-haiku-20241022';
-const FALLBACK_MODEL = 'claude-3-5-haiku-20241022';
+const ANTHROPIC_MODEL = process.env.ANTHROPIC_MODEL || 'claude-3-7-sonnet-latest';
+const MODEL_CANDIDATES = [
+  ANTHROPIC_MODEL,
+  'claude-3-7-sonnet-latest',
+  'claude-3-7-sonnet-20250219',
+  'claude-3-5-sonnet-latest',
+  'claude-3-5-sonnet-20241022',
+  'claude-3-5-haiku-latest',
+  'claude-3-5-haiku-20241022',
+];
 
 const JOURNAL_COACH_SYSTEM_PROMPT = `
 당신은 심리학적 전문 지식을 바탕으로 사용자의 자기 성찰과 내면 성장을 돕는 최고급 저널링 코치입니다. 사용자의 일상이 단순한 기록을 넘어 더 깊은 통찰로 '부화(hatching)'할 수 있도록 이끕니다.
@@ -85,24 +93,29 @@ export default async function handler(req: any, res: any) {
       }),
     });
 
-    let response = await sendMessage(ANTHROPIC_MODEL);
+    const triedModels = new Set<string>();
+    let response: Response | null = null;
     let errorBody = '';
 
-    if (!response.ok) {
+    for (const model of MODEL_CANDIDATES) {
+      if (triedModels.has(model)) continue;
+      triedModels.add(model);
+
+      response = await sendMessage(model);
+      if (response.ok) {
+        break;
+      }
+
       errorBody = await response.text();
       const isModelNotFound = response.status === 404 && errorBody.includes('not_found_error');
-      const canRetryWithFallback = ANTHROPIC_MODEL !== FALLBACK_MODEL;
-
-      if (isModelNotFound && canRetryWithFallback) {
-        response = await sendMessage(FALLBACK_MODEL);
-        if (!response.ok) {
-          errorBody = await response.text();
-        }
+      if (!isModelNotFound) {
+        break;
       }
     }
 
-    if (!response.ok) {
-      return res.status(response.status).json({ error: errorBody });
+    if (!response || !response.ok) {
+      const status = response?.status || 500;
+      return res.status(status).json({ error: errorBody || 'Failed to reach Anthropic API' });
     }
 
     const data = (await response.json()) as {
