@@ -1,8 +1,6 @@
 name: Deploy to GitHub Pages
 
 on:
-  push:
-    branches: [ "main" ] # 브랜치 이름이 다르다면 수정하세요 (보통 main)
   workflow_dispatch:
 
 permissions:
