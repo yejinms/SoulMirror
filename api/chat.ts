@@ -1,7 +1,13 @@
 const ANTHROPIC_API_URL = 'https://api.anthropic.com/v1/messages';
 const ANTHROPIC_MODEL = process.env.ANTHROPIC_MODEL || 'claude-3-7-sonnet-latest';
+const ENV_MODEL_CANDIDATES = (process.env.ANTHROPIC_MODEL_CANDIDATES || '')
+  .split(',')
+  .map((v) => v.trim())
+  .filter(Boolean);
 const MODEL_CANDIDATES = [
   ANTHROPIC_MODEL,
+  ...ENV_MODEL_CANDIDATES,
+  'claude-sonnet-4-20250514',
   'claude-3-7-sonnet-latest',
   'claude-3-7-sonnet-20250219',
   'claude-3-5-sonnet-latest',
@@ -94,12 +100,14 @@ export default async function handler(req: any, res: any) {
     });
 
     const triedModels = new Set<string>();
+    const attemptedModels: string[] = [];
     let response: Response | null = null;
     let errorBody = '';
 
     for (const model of MODEL_CANDIDATES) {
       if (triedModels.has(model)) continue;
       triedModels.add(model);
+      attemptedModels.push(model);
 
       response = await sendMessage(model);
       if (response.ok) {
@@ -115,7 +123,18 @@ export default async function handler(req: any, res: any) {
 
     if (!response || !response.ok) {
       const status = response?.status || 500;
-      return res.status(status).json({ error: errorBody || 'Failed to reach Anthropic API' });
+      const isModelNotFound = status === 404 && errorBody.includes('not_found_error');
+      if (isModelNotFound) {
+        return res.status(502).json({
+          error: `No accessible Anthropic model found. Tried: ${attemptedModels.join(', ')}`,
+          upstream_error: errorBody,
+        });
+      }
+
+      return res.status(status).json({
+        error: errorBody || 'Failed to reach Anthropic API',
+        attempted_models: attemptedModels,
+      });
     }
 
     const data = (await response.json()) as {
