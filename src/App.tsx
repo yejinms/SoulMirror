@@ -313,6 +313,8 @@ function ChatView({ sessionId, onStartSession }: { sessionId: string | null, onS
   const [input, setInput] = useState("");
   const [isTyping, setIsTyping] = useState(false);
   const scrollRef = useRef<HTMLDivElement>(null);
+  const END_SESSION_INTENT_REGEX =
+    /(세션\s*종료|종료할게|종료할래|끝낼게|끝낼래|마무리할게|마무리할래|오늘은\s*여기까지|여기까지할게|이만할게|그만할게|대화\s*끝|끝내자|마칠게)/i;
 
   useEffect(() => {
     if (scrollRef.current) {
@@ -334,6 +336,13 @@ function ChatView({ sessionId, onStartSession }: { sessionId: string | null, onS
     const userMessage = input.trim();
     setInput("");
     await addMessage(userMessage, 'user');
+
+    const isExplicitEndCommand = userMessage === "/세션종료";
+    const hasEndIntent = END_SESSION_INTENT_REGEX.test(userMessage);
+    if (!isExplicitEndCommand && hasEndIntent) {
+      await addMessage("세션을 마무리하고 리포트를 저장하려면 아래의 **세션 종료** 버튼을 눌러주세요.", 'model');
+      return;
+    }
     
     setIsTyping(true);
     try {

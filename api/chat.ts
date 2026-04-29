@@ -15,6 +15,10 @@ const MODEL_CANDIDATES = [
   'claude-3-5-haiku-latest',
   'claude-3-5-haiku-20241022',
 ];
+const GENERAL_MAX_TOKENS = Number(process.env.ANTHROPIC_MAX_TOKENS_GENERAL || 1400);
+const REPORT_MAX_TOKENS = Number(process.env.ANTHROPIC_MAX_TOKENS_REPORT || 2048);
+const ENABLE_PROMPT_CACHING = process.env.ANTHROPIC_PROMPT_CACHING !== 'false';
+const PROMPT_CACHE_TTL = process.env.ANTHROPIC_PROMPT_CACHE_TTL === '1h' ? '1h' : '5m';
 
 const JOURNAL_COACH_SYSTEM_PROMPT = `
 당신은 심리학적 전문 지식을 바탕으로 사용자의 자기 성찰과 내면 성장을 돕는 최고급 저널링 코치입니다. 사용자의 일상이 단순한 기록을 넘어 더 깊은 통찰로 '부화(hatching)'할 수 있도록 이끕니다.
@@ -36,7 +40,9 @@ const JOURNAL_COACH_SYSTEM_PROMPT = `
 - 강조 기호(**) 전후 또는 내부에 불필요한 따옴표나 공백을 넣지 마십시오. (예: '**강조**' (X), "**강조**" (X), **'강조'** (X) -> **강조** (O))
 
 [세션 종료 및 리포트 프로토콜]
-사용자가 "/세션종료"라고 말하거나 종료 의사를 밝히면, 즉시 다음 양식에 맞춘 [데일리 저널링 심층 리포트]를 작성합니다.
+리포트는 사용자가 정확히 "/세션종료"라고 입력했을 때만 작성합니다.
+종료 의사를 암시하거나 유사한 표현(예: "이제 마무리할게요", "끝낼래요", "오늘은 여기까지")만으로는 절대 리포트를 작성하지 마십시오.
+"/세션종료"가 아닌 일반 대화에서는 평소 코칭 대화를 유지하고, 사용자가 마무리 의도를 보이면 "하단의 세션 종료 버튼"을 눌러달라고 안내만 하십시오.
 
 ---
 ### 📅 [YYYY-MM-DD] 저널링 세션 리포트
@@ -81,6 +87,13 @@ export default async function handler(req: any, res: any) {
     return res.status(400).json({ error: 'Invalid messages payload' });
   }
 
+  const lastUserMessage = [...messages]
+    .reverse()
+    .find((m) => m?.role === 'user' && typeof m?.content === 'string')
+    ?.content?.trim();
+  const isReportRequest = lastUserMessage === '/세션종료';
+  const maxTokens = isReportRequest ? REPORT_MAX_TOKENS : GENERAL_MAX_TOKENS;
+
   try {
     const sendMessage = async (model: string) =>
       fetch(ANTHROPIC_API_URL, {
@@ -93,9 +106,12 @@ export default async function handler(req: any, res: any) {
       body: JSON.stringify({
         model,
         system: JOURNAL_COACH_SYSTEM_PROMPT,
-        max_tokens: 2048,
+        max_tokens: maxTokens,
         temperature: 0.7,
         messages: toAnthropicMessages(messages),
+        ...(ENABLE_PROMPT_CACHING
+          ? { cache_control: { type: 'ephemeral', ttl: PROMPT_CACHE_TTL } }
+          : {}),
       }),
     });
 
@@ -139,12 +155,34 @@ export default async function handler(req: any, res: any) {
 
     const data = (await response.json()) as {
       content?: Array<{ type: string; text?: string }>;
+      usage?: {
+        input_tokens?: number;
+        output_tokens?: number;
+        cache_creation_input_tokens?: number;
+        cache_read_input_tokens?: number;
+      };
     };
 
     const text = (data.content || [])
       .filter((block) => block.type === 'text' && typeof block.text === 'string')
       .map((block) => block.text)
       .join('');
+
+    const usage = data.usage || {};
+    console.info(
+      '[anthropic.usage]',
+      JSON.stringify({
+        isReportRequest,
+        model: attemptedModels[attemptedModels.length - 1],
+        maxTokens,
+        promptCaching: ENABLE_PROMPT_CACHING,
+        promptCacheTtl: ENABLE_PROMPT_CACHING ? PROMPT_CACHE_TTL : null,
+        input_tokens: usage.input_tokens ?? null,
+        output_tokens: usage.output_tokens ?? null,
+        cache_creation_input_tokens: usage.cache_creation_input_tokens ?? null,
+        cache_read_input_tokens: usage.cache_read_input_tokens ?? null,
+      }),
+    );
 
     return res.status(200).json({ text });
   } catch (error) {
